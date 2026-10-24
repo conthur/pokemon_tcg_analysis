@@ -51,6 +51,6 @@ rsconnect/
 
 data/
 
-.Rproj
+*.Rproj
 *.csv
 *.rds

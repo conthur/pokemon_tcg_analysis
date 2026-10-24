@@ -1,0 +1,204 @@
+---
+title: "pokemon_analysis"
+format: html
+keep_md: TRUE
+---
+
+# Imports
+
+```{r}
+library(tidyverse)
+
+pokemon_2026 = read.csv("data/dataset_2026-10-23.csv")
+```
+
+# Number of NA's for Each Column
+
+```{r}
+pokemon_2026 %>%
+  summarise(across(everything(), ~ sum(is.na(.))))
+```
+
+# Estimates of Location
+
+Estimates of Location  are a way to get an idea of the typical value for each feature variable (numerical). 
+
+## Prices 
+
+### Mean
+
+```{r}
+mean(pokemon_2026$low, na.rm = TRUE)
+mean(pokemon_2026$mid, na.rm = TRUE)
+mean(pokemon_2026$high, na.rm = TRUE)
+```
+### Trim Mean
+
+```{r}
+mean(pokemon_2026$low, na.rm = TRUE, trim = 0.1)
+mean(pokemon_2026$mid, na.rm = TRUE, trim = 0.1)
+mean(pokemon_2026$high, na.rm = TRUE, trim = 0.1)
+```
+### Summary
+
+```{r}
+summary(pokemon_2026$low)
+summary(pokemon_2026$mid)
+summary(pokemon_2026$high)
+```
+
+From this trim and our summary statistics you can tell that the data is heavily skewed. Next we will be looking into the distributions of the prices. 
+
+## HP
+
+```{r}
+summary(pokemon_2026$hp)
+```
+We can infer that the health of each Pokemon is not as skewed as the price, let's look at this data in this distribution
+
+# Visualizing Distributions
+
+## Market Prices of Cards with Boxplots
+
+```{r}
+ggplot(pokemon_2026, aes(x = low)) +
+  geom_boxplot() 
+```
+
+```{r}
+ggplot(pokemon_2026, aes(x = mid)) +
+  geom_boxplot() 
+```
+
+```{r}
+ggplot(pokemon_2026, aes(x = high)) +
+  geom_boxplot()
+```
+
+We can tell from this chart that our data is heavily skewed for the lowest market price, middle market price, and highest market price. 
+
+## HP with Histograms
+
+```{r}
+ggplot(pokemon_2026, aes(x = hp)) +
+  geom_histogram(bins = 40) + 
+  labs(title = "Distribution of Pokemon HP", 
+       x = "HP (Health Points)") 
+
+```
+
+# Number of Attacks with Density Plot
+
+```{r}
+ggplot(pokemon_2026, aes(x = age_years)) +
+  geom_density(fill = "skyblue") +
+  labs(title = "Density Curve of Number of Attacks",
+       x = "Number of Years Since the Card First Released")
+```
+
+## Number of Attacks in Years with Frequency Tables 
+
+```{r}
+breaks <- seq(from=min(pokemon_2026[['n_attacks']]),
+                to=max(pokemon_2026[['n_attacks']]), length=4)
+pop_freq <- cut(pokemon_2026[['n_attacks']], breaks=breaks,
+                right=TRUE, include.lowest=TRUE)
+table(pop_freq)
+```
+
+# Exploring Variability
+
+## Standard Deviation and Related Estimates
+
+```{r}
+sd(pokemon_2026$low, na.rm = TRUE)
+sd(pokemon_2026$mid, na.rm = TRUE)
+sd(pokemon_2026$high, na.rm = TRUE)
+sd(pokemon_2026$hp, na.rm = TRUE)
+sd(pokemon_2026$n_attacks, na.rm = TRUE)
+sd(pokemon_2026$age_years, na.rm = TRUE)
+```
+
+## HP with Mean Absolute Deviation
+
+Mean Absolute Deviation is a way to find the measure of variance for a column which has extreme outliers. 
+
+```{r}
+mean(abs(pokemon_2026$mid - mean(pokemon_2026$mid, na.rm = TRUE)), na.rm = TRUE)
+```
+We can see that this differs widely from the standard deviation which was given to us above for the mid column. 
+
+## Quartiles (IQR)
+
+```{r}
+IQR(pokemon_2026$low, na.rm = TRUE)
+IQR(pokemon_2026$mid, na.rm = TRUE)
+IQR(pokemon_2026$high, na.rm = TRUE)
+IQR(pokemon_2026$hp, na.rm = TRUE)
+IQR(pokemon_2026$age_years, na.rm = TRUE)
+```
+
+We can use this to find the range of (x, y) where x is the 1nd quartille and is the 3rd quantile. 
+
+```{r}
+quantile(pokemon_2026$low, probs = c(0.25, 0.75), na.rm = TRUE)
+quantile(pokemon_2026$mid, probs = c(0.25, 0.75), na.rm = TRUE)
+quantile(pokemon_2026$high, probs = c(0.25, 0.75), na.rm = TRUE)
+quantile(pokemon_2026$age_years, probs = c(0.25, 0.75), na.rm = TRUE)
+quantile(pokemon_2026$hp, probs = c(0.25, 0.75), na.rm = TRUE)
+```
+
+# Binary and Categorical Data
+
+A good majority of the data we have collected is either categorical or binary. Here are a couple of ways in which to explore these data types
+
+# Mode
+
+What is the most common category in these columns
+
+```{r}
+get_mode = function(v, na.rm = TRUE) {
+  
+  # Remove NAs
+  v_clean <- v[!is.na(v)]
+  
+  if (length(v_clean) == 0) {
+    return(NA)
+  }
+  
+  uniqv <- unique(v_clean)
+  uniqv[which.max(tabulate(match(v_clean, uniqv)))]
+}
+
+get_mode(pokemon_2026$series)
+get_mode(pokemon_2026$poke_type)
+get_mode(pokemon_2026$artist)
+```
+# Correlation
+
+correlation is defined from the book as a measure that quantifies the strength and direct of a linear relationship. We can filter our dataset to only numerical column in order to find the correlation between our nuemrica variables
+
+```{r}
+numeric_only_poke = pokemon_2026 %>%
+  select(where(is.numeric))
+
+
+cor(numeric_only_poke, method = "pearson", 
+    use = "complete.obs")
+```
+
+From here we can get a good idea of what could be correlated and we can go through and graph a correlation in order to get an idea of it's strength and direction
+
+```{r}
+ggplot(pokemon_2026, aes(x = mid, y = low)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "The Lowest Market Price by The Highest Market Price of a Card")
+```
+```{r}
+ggplot(pokemon_2026, aes(x = log_price, y = number_int)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "The Log Middle Market Price by the Number of Cards")
+```
+
