@@ -1,0 +1,196 @@
+---
+title: "Pokémon TCG Card Analysis: Data Set Engineering"
+format: html
+keep-md: true
+---
+
+# Imports
+
+```{r}
+library(tidyverse)
+library(httr2)
+library(lubridate)
+```
+
+# Get Pokemon TCG API and Build our Dataset
+
+API documentation found [here]("https://docs.pokemontcg.io")
+
+```{r}
+TEST_SET  <- NULL           
+PAGE_SIZE <- 50
+api_key   <- Sys.getenv("POKEMONTCG_API_KEY")
+snap_date <- Sys.Date()    
+                           
+dir.create("data/raw", recursive = TRUE, showWarnings = FALSE)
+ 
+if (!nzchar(api_key)) message("No API key found. It will work, but slower and less reliably.")
+ 
+# API helper with retries 
+pt_get <- function(endpoint, query = list()) {
+  req <- request("https://api.pokemontcg.io/v2")
+  req <- req_url_path_append(req, endpoint)
+  req <- req_url_query(req, !!!query)
+  req <- req_timeout(req, 120)
+  req <- req_retry(
+    req,
+    max_tries    = 6,
+    is_transient = function(resp) resp_status(resp) %in% c(429, 500, 502, 503, 504),
+    backoff      = function(attempt) 2^attempt     # 2, 4, 8, 16, 32 seconds
+  )
+  if (nzchar(api_key)) req <- req_headers(req, `X-Api-Key` = api_key)
+ 
+  resp <- req_perform(req)
+  resp_body_json(resp)
+}
+ 
+# checks if the API is alive
+message("Checking API...")
+ping <- tryCatch(pt_get("sets", list(pageSize = 1)), error = function(e) {
+  message("API check failed: ", conditionMessage(e))
+  NULL
+})
+if (is.null(ping)) {
+  stop("The Pokemon TCG API isn't responding right now (server errors). ",
+       "Wait 15-30 minutes and run again. Nothing is lost.")
+}
+message("API is up.")
+ 
+# Sets (2010 onward) 
+sets <- pt_get("sets", list(pageSize = 250))$data |>
+  map_dfr(\(s) tibble(
+    set_id        = s$id,
+    set_name      = s$name,
+    series        = s$series,
+    release_date  = ymd(s$releaseDate),
+    printed_total = s$printedTotal %||% NA_integer_,
+    total         = s$total %||% NA_integer_
+  )) |>
+  filter(release_date >= ymd("2020-01-01"))
+ 
+if (!is.null(TEST_SET)) sets <- filter(sets, set_id == TEST_SET)
+message("Sets to fetch: ", nrow(sets))
+ 
+# Download cards per set (cached; resumable)
+cache_path <- function(set_id) file.path("data/raw", paste0(set_id, "_", snap_date, ".rds"))
+ 
+get_set_cards <- function(set_id) {
+  cache <- cache_path(set_id)
+  if (file.exists(cache)) return(readRDS(cache))
+ 
+  out <- list(); page <- 1
+  repeat {
+    res <- pt_get("cards", list(q = paste0("set.id:", set_id),
+                                page = page, pageSize = PAGE_SIZE))
+    out <- c(out, res$data)
+    if (length(res$data) == 0 || length(out) >= res$totalCount) break
+    page <- page + 1
+  }
+  saveRDS(out, cache)
+  out
+}
+ 
+download_sets <- function(ids, labels) {
+  failed <- character()
+  n <- length(ids)
+  for (i in seq_len(n)) {
+    id <- ids[i]
+    cached <- file.exists(cache_path(id))
+    message(sprintf("[%d/%d] %s - %s  (%s)%s", i, n, id, labels[i],
+                    format(Sys.time(), "%H:%M:%S"), if (cached) "  [cached]" else ""))
+    res <- tryCatch(get_set_cards(id), error = function(e) {
+      message("   FAILED: ", conditionMessage(e))
+      NULL
+    })
+    if (is.null(res)) failed <- c(failed, id) else message("   ", length(res), " cards")
+    if (!cached) Sys.sleep(1)
+  }
+  failed
+}
+ 
+failed <- download_sets(sets$set_id, sets$set_name)
+ 
+# One automatic second pass for anything that failed
+if (length(failed) > 0) {
+  message("\n", length(failed), " set(s) failed. Waiting 60s, then retrying once...")
+  Sys.sleep(60)
+  failed <- download_sets(failed, sets$set_name[match(failed, sets$set_id)])
+}
+ 
+if (length(failed) > 0) {
+  message("\nStill failing (rerun the script later; finished sets are cached):")
+  print(failed)
+}
+ 
+# Load everything that downloaded successfully
+have <- sets$set_id[file.exists(cache_path(sets$set_id))]
+if (length(have) == 0) stop("No sets downloaded. Try again later.")
+raw_cards <- unlist(lapply(have, function(id) readRDS(cache_path(id))), recursive = FALSE)
+message("\nLoaded ", length(raw_cards), " cards from ", length(have), " sets.")
+ 
+# Flatten into two tidy tables 
+num <- function(x) suppressWarnings(as.numeric(x %||% NA))
+ 
+cards <- map_dfr(raw_cards, function(x) {
+  tibble(
+    card_id      = x$id,
+    set_id       = x$set$id,
+    number       = x$number,
+    name         = x$name,
+    supertype    = x$supertype,
+    subtypes     = paste(unlist(x$subtypes), collapse = "|"),
+    hp           = num(x$hp),
+    poke_type    = unlist(x$types)[1] %||% NA_character_,
+    evolves_from = x$evolvesFrom %||% NA_character_,
+    rarity       = x$rarity %||% NA_character_,
+    artist       = x$artist %||% NA_character_,
+    retreat_cost = num(x$convertedRetreatCost),
+    n_attacks    = length(x$attacks),
+    dex_number   = unlist(x$nationalPokedexNumbers)[1] %||% NA_integer_
+  )
+})
+ 
+prices <- map_dfr(raw_cards, function(x) {
+  p <- x$tcgplayer$prices
+  if (is.null(p)) return(NULL)
+  variant_names <- names(p)
+  rows <- vector("list", length(p))
+  for (i in seq_along(p)) {
+    v <- p[[i]]
+    rows[[i]] <- tibble(
+      card_id        = x$id,
+      variant        = variant_names[i],
+      market         = num(v$market),
+      low            = num(v$low),
+      mid            = num(v$mid),
+      high           = num(v$high),
+      tcg_updated_at = x$tcgplayer$updatedAt %||% NA_character_,
+      snapshot_date  = snap_date
+    )
+  }
+  bind_rows(rows)
+})
+ 
+# Join into one modeling table 
+df <- prices |>
+  inner_join(cards, by = "card_id") |>
+  left_join(sets, by = "set_id") |>
+  filter(!is.na(market), market > 0) |>
+  mutate(
+    log_price  = log(market),
+    age_years  = as.numeric(snap_date - release_date) / 365.25,
+    number_int = suppressWarnings(as.integer(str_extract(number, "\\d+"))),
+    is_secret  = !is.na(number_int) & !is.na(printed_total) & number_int > printed_total,
+    is_ex_gx_v = str_detect(subtypes, "\\b(EX|GX|V|VMAX|VSTAR|ex|MEGA)\\b"),
+    across(c(rarity, variant, poke_type, supertype, series), as.factor)
+  )
+ 
+# Save
+write_csv(cards, "data/cards.csv")
+write_csv(sets,  "data/sets.csv")
+write_csv(df,    paste0("data/dataset_", snap_date, ".csv"))
+ 
+hist_file <- "data/price_history.csv"
+write_csv(prices, hist_file, append = file.exists(hist_file))
+```
+
