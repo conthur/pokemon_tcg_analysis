@@ -1,4 +1,4 @@
-# Pokemon TCG Analysis Repositoru
+# Pokemon TCG Analysis Repository
 
 What factors are important in determining a Pokémon card's price?
 
